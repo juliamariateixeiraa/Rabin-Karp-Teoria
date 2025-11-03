@@ -1,0 +1,1 @@
+A busca de padroes em textos e um desafio classico da ciencia da computacao. O algoritmo de Rabin-Karp utiliza hashing para fazer a comparacao de maneira eficiente. Teste de performance inicial. O resultado deve ser rapido.

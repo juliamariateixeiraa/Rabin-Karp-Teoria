@@ -1,0 +1,7 @@
+{
+    "python.analysis.extraPaths": [
+        "./src/python"
+    ],
+    // Isto diz ao Pylance para procurar módulos também nesta pasta.
+    "python.languageServer": "Pylance" 
+}
