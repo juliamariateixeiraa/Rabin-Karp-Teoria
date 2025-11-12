@@ -1,35 +1,31 @@
-# scripts/run_experiments.py
-
 import time
 import random
 import string
 import csv
 import sys
+import subprocess
 from pathlib import Path
 
-# Adiciona o diretório 'src' ao caminho de módulos do Python.
-sys.path.append(str(Path(__file__).parent.parent)) 
-# ^^^ Aponta para a pasta raiz do projeto, que contém 'src'
+# para adicionar o diretório 'src' ao caminho de módulos em python.
+sys.path.append(str(Path(__file__).parent.parent))
 
 try:
-    # A importação deve ser feita do pacote 'src.python'
     from src.python.rabin_karp import RabinKarp
 except ImportError:
+    #verifica se cpnseguiu importar para a analise
     print("ERRO CRÍTICO: Não foi possível importar o módulo RabinKarp.")
     print("Verifique se 'rabin_karp.py' está em 'src/python/'.")
     sys.exit(1)
 
+NUM_REPETICOES = 25  # repetições de 15 a 30
+SAIDA_CSV = Path(__file__).parent.parent / 'data' / 'raw_times_all.csv'
+C_EXECUTABLE = Path(__file__).parent.parent / 'bin' / 'rabin_karp_c_exp' #em c
 
-# --- CONFIGURAÇÕES DE EXPERIMENTO ---
-NUM_REPETICOES = 25  # Repetições (de 15 a 30)
-SAIDA_CSV_PYTHON = Path(__file__).parent.parent / 'data' / 'raw_times_python.csv'
+TAMANHOS_TEXTO = [10**4, 10**5, 5*10**5]
+TAMANHOS_PADRAO = [10, 50, 200]
+CASES = ['best', 'average', 'worst']
 
-# Definições de tamanhos para textos e padrões
-TAMANHOS_TEXTO = [10**4, 10**5, 5*10**5] # Pequeno, Médio, Grande
-TAMANHOS_PADRAO = [10, 50, 200]        
-
-# --- FUNÇÕES DE GERAÇÃO DE DADOS ---
-
+#geração de dados
 def generate_random_string(length, char_set=string.ascii_letters + string.digits):
     """Gera uma string aleatória."""
     return ''.join(random.choice(char_set) for _ in range(length))
@@ -38,81 +34,119 @@ def generate_test_case(text_size, pattern_size, case_type):
     """
     Gera o texto (T) e o padrão (P) para os cenários de complexidade.
     """
-    
+
     if case_type == 'worst':
-        # Pior Caso (O(N*M)): Força colisões com repetição do mesmo caractere.
+        # pior Caso (Rabin-Karp): força colisões
         char = 'a'
         text = char * text_size
         pattern = char * pattern_size
-        
+
     elif case_type == 'best':
-        # Melhor Caso (O(N+M)): Padrão no início (mínimo de shifts)
+        # melhor Caso (O(N+M)): padrão no início
         pattern = generate_random_string(pattern_size)
         text = pattern + generate_random_string(text_size - pattern_size)
-        
+
     elif case_type == 'average':
-        # Caso Médio: Padrão no meio
+        # caso Médio: padrão no meio
         pattern = generate_random_string(pattern_size)
         text = generate_random_string(text_size)
         mid_index = text_size // 2 - pattern_size // 2
-        text = text[:mid_index] + pattern + text[mid_index + pattern_size:]
-        
+
+        if mid_index < 0:
+             mid_index = 0
+
+        end_index = mid_index + pattern_size
+
+        text = generate_random_string(mid_index) + pattern + generate_random_string(text_size - end_index)
+
     else:
         raise ValueError("Tipo de caso inválido.")
-    
     return text, pattern, case_type
 
-# --- FUNÇÃO PRINCIPAL DE EXECUÇÃO ---
+#para executar em c
+def run_c_experiment(text, pattern, t_size, p_size, case_type, results):
+    """
+    Executa o código C, passando o texto via stdin para evitar Argument list too long,
+    e coleta o tempo.
+    """
+
+    #tratando o erro de execução
+    if not C_EXECUTABLE.exists():
+        print(f"ERRO: Executável C não encontrado em {C_EXECUTABLE}. Rode 'make all' primeiro.")
+        return
+
+    # o texto é enviado via stdin. Adiciona o \n para o fgets no C funcionar.
+    text_bytes = (text + '\n').encode('utf-8')
+
+    for run in range(1, NUM_REPETICOES + 1):
+        process = None
+        try:
+            process = subprocess.run(
+                [str(C_EXECUTABLE), pattern],
+                input=text_bytes,
+                capture_output=True,
+                check=True
+            )
+
+            # decodifica o stdout do processo C e remove espaços
+            output_str = process.stdout.decode('utf-8').strip()
+            execution_time = float(output_str)
+
+        except subprocess.CalledProcessError as e:
+            # se retorna um erro
+            sys.stderr.write(f"Erro C (T={t_size}, P={p_size}, Run={run}): {e.stderr.decode('utf-8').strip()}\n")
+            execution_time = float('nan')
+        except ValueError:
+            # se a saída não for um número float
+            output = process.stdout.decode('utf-8').strip() if process else "N/A"
+            sys.stderr.write(f"Erro conversão C (T={t_size}, P={p_size}, Run={run}). Saída: {output}\n")
+            execution_time = float('nan')
+
+        # salvando o resultado
+        results.append([
+            'C', t_size, p_size, case_type, run, execution_time
+        ])
+
 
 def run_all_experiments():
-    """Executa todos os testes e salva os dados brutos em CSV."""
-    
+    """Executa todos os testes (Python e C) e salva os dados brutos em CSV."""
+
     rk = RabinKarp()
     results = []
-    
-    # Cabeçalho do CSV
+
     results.append(['language', 'text_size', 'pattern_size', 'case_type', 'run_number', 'execution_time_seconds'])
 
-    # Iterar sobre todos os cenários
     for t_size in TAMANHOS_TEXTO:
         for p_size in TAMANHOS_PADRAO:
             if p_size > t_size: continue
 
-            for case in ['best', 'average', 'worst']:
-                
-                print(f"Executando Python: T={t_size}, P={p_size}, Caso={case} ({NUM_REPETICOES}x)...")
+            for case in CASES:
 
                 text, pattern, case_type = generate_test_case(t_size, p_size, case)
-                
-                # Repetir a execução (15-30 vezes)
+
+                # executando o python
+                print(f"Executando Python: T={t_size}, P={p_size}, Caso={case} ({NUM_REPETICOES}x)...")
                 for run in range(1, NUM_REPETICOES + 1):
                     start_time = time.perf_counter()
-                    
-                    # Chama o algoritmo de busca
                     rk.search(text, pattern)
-                    
                     end_time = time.perf_counter()
                     execution_time = end_time - start_time
-                    
-                    # Salva o resultado bruto
+
                     results.append([
-                        'Python', 
-                        t_size, 
-                        p_size, 
-                        case_type, 
-                        run, 
-                        execution_time
+                        'Python', t_size, p_size, case_type, run, execution_time
                     ])
 
-    # 4. Salvar resultados
-    with open(SAIDA_CSV_PYTHON, 'w', newline='') as f:
+                # executando o c
+                print(f"Executando C: T={t_size}, P={p_size}, Caso={case} ({NUM_REPETICOES}x)...")
+                run_c_experiment(text, pattern, t_size, p_size, case_type, results)
+
+
+    with open(SAIDA_CSV, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerows(results)
-        
-    print(f"\n✅ Experimentos em Python concluídos.")
-    print(f"Arquivo de dados brutos salvo em: {SAIDA_CSV_PYTHON}")
+    print(f"\n✅ Experimentos em Python e C concluídos.")
+    print(f"Arquivo de dados brutos salvo em: {SAIDA_CSV}")
 
 if __name__ == "__main__":
-    # Garante que a pasta 'data' exista antes de salvar
-    SAIDA_CSV_PYTHON.parent.mkdir(parents=True, exist_ok=True)
+    SAIDA_CSV.parent.mkdir(parents=True, exist_ok=True)
     run_all_experiments()
